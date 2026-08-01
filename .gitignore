@@ -1,0 +1,11 @@
+# OS
+.DS_Store
+
+# venv, in case it is ever relocated into the project
+lsp-mcp-venv/
+
+# backups created by setup.sh
+config.toml.bak.*
+
+# misc
+*.log
