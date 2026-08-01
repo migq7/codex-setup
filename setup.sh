@@ -3,6 +3,10 @@
 # codex-setup — one-click install / self-check / uninstall for the Codex
 # LSP bridge (clangd + basedpyright) and the associated developer instructions.
 #
+# Install first runs the DeepSeek model configurator
+# (scripts/codex-deepseek-setup.sh) so the default model can be switched to
+# DeepSeek in the same flow; pass --skip-deepseek to skip that interactive step.
+#
 # The Codex CLI has no built-in LSP configuration, so this project wires
 # language servers into Codex through an MCP bridge (codex-lsp-bridge).
 # Everything in this script is idempotent: re-running it only fixes what is
@@ -10,6 +14,8 @@
 #
 # Usage:
 #   ./setup.sh             install (idempotent) then run the self-check
+#   ./setup.sh --skip-deepseek
+#                          install without touching the DeepSeek model config
 #   ./setup.sh --check     run the self-check only
 #   ./setup.sh --uninstall remove the LSP bridge MCP entry, venv and the
 #                           managed developer_instructions block
@@ -18,10 +24,16 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# Remember whether CODEX_DIR was explicitly set before the default is applied,
+# so the DeepSeek step can target the same directory via CODEX_HOME.
+CODEX_DIR_OVERRIDDEN=0
+[[ -n "${CODEX_DIR:-}" ]] && CODEX_DIR_OVERRIDDEN=1
+
 # Overridable locations (mainly useful for testing the script).
 CODEX_DIR="${CODEX_DIR:-$HOME/.codex}"
 CODEX_CONFIG="${CODEX_CONFIG:-$CODEX_DIR/config.toml}"
 VENV_DIR="${VENV_DIR:-$CODEX_DIR/lsp-mcp-venv}"
+DEEPSEEK_SETUP_SCRIPT="${DEEPSEEK_SETUP_SCRIPT:-$PROJECT_DIR/scripts/codex-deepseek-setup.sh}"
 
 BRIDGE_CONFIG="$PROJECT_DIR/config/lsp-mcp-config.toml"
 MCP_NAME="lsp_bridge"
@@ -34,7 +46,7 @@ warn() { printf '\033[1;33m[codex-setup]\033[0m WARN: %s\n' "$*" >&2; }
 err() { printf '\033[1;31m[codex-setup]\033[0m ERROR: %s\n' "$*" >&2; }
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 check_prereqs() {
@@ -115,6 +127,22 @@ with open(path, "w", encoding="utf-8") as f:
     f.writelines(lines)
 print("  developer_instructions added")
 PY
+}
+
+run_deepseek_setup() {
+  if [[ ! -f "$DEEPSEEK_SETUP_SCRIPT" ]]; then
+    err "DeepSeek setup script not found: $DEEPSEEK_SETUP_SCRIPT"
+    err "set DEEPSEEK_SETUP_SCRIPT to its location, or pass --skip-deepseek"
+    exit 1
+  fi
+  info "running DeepSeek model setup ($DEEPSEEK_SETUP_SCRIPT)"
+  info "pick 1/2 to switch the default model, 3 to restore the default config"
+  if [[ "$CODEX_DIR_OVERRIDDEN" -eq 1 ]]; then
+    info "CODEX_DIR is set, aligning the DeepSeek step via CODEX_HOME=$CODEX_DIR"
+    CODEX_HOME="$CODEX_DIR" bash "$DEEPSEEK_SETUP_SCRIPT"
+  else
+    bash "$DEEPSEEK_SETUP_SCRIPT"
+  fi
 }
 
 self_check() {
@@ -210,6 +238,21 @@ uninstall() {
   info "done. The project itself (~/codex-setup) was kept; delete it manually if no longer needed."
 }
 
+SKIP_DEEPSEEK=0
+
+install() {
+  check_prereqs
+  if [[ "$SKIP_DEEPSEEK" -eq 0 ]]; then
+    run_deepseek_setup
+  else
+    info "skipping DeepSeek model setup (--skip-deepseek)"
+  fi
+  install_venv
+  install_mcp_entry
+  install_developer_instructions
+  self_check
+}
+
 case "${1:-install}" in
   --help|-h)
     usage
@@ -221,12 +264,12 @@ case "${1:-install}" in
   --uninstall)
     uninstall
     ;;
+  --skip-deepseek)
+    SKIP_DEEPSEEK=1
+    install
+    ;;
   install|"")
-    check_prereqs
-    install_venv
-    install_mcp_entry
-    install_developer_instructions
-    self_check
+    install
     ;;
   *)
     err "unknown option: $1"
