@@ -1,6 +1,6 @@
 # codex-setup
 
-用 git 维护的 Codex 本机环境配置项目。`./setup.sh install` 的执行顺序是：**先跑 DeepSeek 模型配置器**（把 Codex 默认模型切到 deepseek-v4-flash/pro，或还原默认配置），**再装 C++/Python LSP 桥**（clangd + basedpyright）并注入全局 `developer_instructions`。设计目标是：新机器上 clone 下来跑一条命令，Codex 就同时拥有可用的 DeepSeek 模型和语言服务器级别的语义能力；后续可以继续往这个项目里加其他 MCP server 或 `config.toml` 配置。
+用 git 维护的 Codex 本机环境配置项目。`./setup.sh install` 的执行顺序是：**先选择模型提供方**（DeepSeek 官方 API 或 OpenCode Go，也可跳过），把 Codex 默认模型切到对应服务，**再装 C++/Python LSP 桥**（clangd + basedpyright）并注入全局 `developer_instructions`。设计目标是：新机器上 clone 下来跑一条命令，Codex 就同时拥有可用的第三方模型和语言服务器级别的语义能力；后续可以继续往这个项目里加其他 MCP server 或 `config.toml` 配置。
 
 ## 为什么需要这个项目
 
@@ -14,7 +14,9 @@ codex-setup/
 ├── setup.sh                      # 一键安装 / 自检 / 卸载（幂等）
 ├── .gitignore
 ├── scripts/
-│   └── codex-deepseek-setup.sh   # DeepSeek 官方配置器（v1.0.0，固定版本，原样复制）
+│   ├── codex-deepseek-setup.sh   # DeepSeek 官方配置器（v1.0.0，固定版本，原样复制）
+│   ├── codex-opencode-go-setup.sh # OpenCode Go 配置器（由 opencode-go-build 生成）
+│   └── opencode-go-build/        # OpenCode Go 脚本的模板与构建器（改模型清单后重新生成）
 └── config/
     └── lsp-mcp-config.toml       # 语言服务器映射（Python → basedpyright，C/C++/CUDA → clangd）
 ```
@@ -23,9 +25,11 @@ codex-setup/
 
 ## 执行流程
 
-`./setup.sh install` 固定按以下顺序执行，**DeepSeek 配置永远在第一步**（`--skip-deepseek` 可跳过第 1 步）：
+`./setup.sh install` 固定按以下顺序执行，**模型提供方选择永远在第一步**（`--skip-deepseek` 或在菜单里选 s 可跳过）：
 
-1. **DeepSeek 模型配置器**（`scripts/codex-deepseek-setup.sh`）：交互菜单选 1/2/3，切换默认模型或还原默认配置
+1. **模型提供方选择**：交互选择 DeepSeek / OpenCode Go / 跳过，再运行对应的配置器
+   - DeepSeek：`scripts/codex-deepseek-setup.sh`（菜单 1/2 切换模型，3 还原）
+   - OpenCode Go：`scripts/codex-opencode-go-setup.sh`（菜单 1..N 切换模型，r 还原）
 2. **LSP 桥 venv**：把 codex-lsp-bridge + basedpyright 装进 `~/.codex/lsp-mcp-venv`
 3. **MCP 注册**：`codex mcp add` 写入 `[mcp_servers.lsp_bridge]`
 4. **注入 `developer_instructions`**：写入全局提示词（已存在则跳过）
@@ -49,41 +53,59 @@ git clone <your-repo-url> ~/codex-setup
 cd ~/codex-setup
 ./setup.sh
 
-# 3. ./setup.sh 的第一步就是弹出 DeepSeek 菜单：选 1 切到 deepseek-v4-flash
-#    （首次会要 API key，可先 export DEEPSEEK_API_KEY=sk-xxx 跳过输入；
-#     不需要 DeepSeek 则用 ./setup.sh --skip-deepseek 跳过）
+# 3. ./setup.sh 的第一步弹出模型提供方菜单：选 1 配置 DeepSeek，选 2 配置 OpenCode Go
+#    （DeepSeek 首次会要 API key，可先 export DEEPSEEK_API_KEY=sk-xxx；
+#     OpenCode Go 可先 export OPENCODE_GO_API_KEY=sk-xxx；
+#     都不需要则用 ./setup.sh --skip-deepseek 跳过）
 
 # 4. 重开一个 Codex 会话，LSP 工具与所选模型即生效
 ```
 
-脚本是幂等的：重复执行只会补齐缺失的部分，不会覆盖你 `~/.codex/config.toml` 里已有的其他配置。DeepSeek 配置器自身也有备份机制，已安装过时会走“仅切换模型”的快路径。
+脚本是幂等的：重复执行只会补齐缺失的部分，不会覆盖你 `~/.codex/config.toml` 里已有的其他配置。两个模型配置器自身也都有备份机制，已安装过时会走“仅切换模型”的快路径。
 
 ## 命令
 
 | 命令 | 作用 |
 | --- | --- |
-| `./setup.sh` | 安装（幂等）并自检；先跑 DeepSeek 配置器（交互菜单），再装 LSP 桥 |
-| `./setup.sh --skip-deepseek` | 安装但跳过 DeepSeek 配置，只装 LSP 桥 |
+| `./setup.sh` | 安装（幂等）并自检；先弹出模型提供方菜单（DeepSeek / OpenCode Go / 跳过），再装 LSP 桥 |
+| `CODEX_MODEL_PROVIDER=opencode ./setup.sh` | 跳过菜单直接配置 OpenCode Go（取值 `deepseek` / `opencode` / `skip`） |
+| `./setup.sh --skip-deepseek` | 安装但跳过模型提供方配置，只装 LSP 桥 |
 | `./setup.sh --check` | 只做自检（MCP 握手 + 工具列表 + 真实调用一次语言服务器） |
-| `./setup.sh --uninstall` | 移除 MCP 条目、删除 venv、移除托管注入的 `developer_instructions`（操作前备份 config.toml；**不还原** DeepSeek 配置，需要还原请运行 DeepSeek 配置器选 3） |
+| `./setup.sh --uninstall` | 移除 MCP 条目、删除 venv、移除托管注入的 `developer_instructions`（操作前备份 config.toml；**不还原**模型配置，需要还原请运行对应配置器：DeepSeek 选 3，OpenCode Go 选 r） |
 | `./setup.sh --help` | 帮助 |
 
 ## 配置管理
 
 下面按 `./setup.sh install` 的执行顺序介绍各块配置。
 
-### 1. DeepSeek 模型配置（`scripts/codex-deepseek-setup.sh`）
+### 1. 模型提供方配置（DeepSeek / OpenCode Go）
 
-安装流程的第一步（固定在最前面）就是执行仓库内固定版本的 DeepSeek 官方配置器，把 Codex 默认模型切换为 DeepSeek。它自己的行为如下：
+安装流程的第一步是交互选择提供方，然后执行仓库内对应的配置器。两者都会做“手术式”改写：只改与目标 provider 冲突的顶层 key，其余配置（`[mcp_servers.*]`、`[projects.*]`、`developer_instructions` 等）原样保留。
+
+#### DeepSeek（`scripts/codex-deepseek-setup.sh`）
+
+仓库内固定版本（v1.0.0，原样复制）的 DeepSeek 官方配置器，把 Codex 默认模型切换为 DeepSeek。它自己的行为如下：
 
 - 交互菜单：选 1 = `deepseek-v4-flash`，选 2 = `deepseek-v4-pro`（当前版本脚本尚未启用，选 2 会提示后退出），选 3 = 还原默认配置（删除 models.json、恢复安装前备份）。
 - API key：优先用环境变量 `DEEPSEEK_API_KEY`（必须以 `sk-` 开头），否则交互输入；key 会写入 `~/.codex/config.toml` 的 `[model_providers.deepseek] experimental_bearer_token`（注意：这是明文存在本机配置里）。
 - 备份在 `~/.codex/backup-deepseek/`；已安装过时再选 1/2 只改 `config.toml` 的 `model` 字段，不触碰其他配置（包括本项目注入的 `[mcp_servers.lsp_bridge]` 和 `developer_instructions`）。
 - 首次安装会对 `config.toml` 做“手术”：改写/删除与 DeepSeek 冲突的顶层 key（如 `profile`、`model_context_window` 等），其余 key 与未知 section（如 `[mcp_servers.*]`、`[projects.*]`）原样保留；`model`、`model_provider` 等顶层 key 始终写在文件最前面。
 - 自定义来源：可用 `DEEPSEEK_SETUP_SCRIPT=/path/to/newer/script ./setup.sh` 指向仓库外的更新版本；仓库内副本是固定版本，想升级就把新文件复制到 `scripts/codex-deepseek-setup.sh` 并 `cmp` 校验后提交。
-- 卸载：`./setup.sh --uninstall` 不会还原 DeepSeek 配置；想恢复默认 Codex 配置，运行 `bash scripts/codex-deepseek-setup.sh` 后选 3（会删除 models.json 并恢复备份）。
+- 卸载：`./setup.sh --uninstall` 不会还原模型配置；想恢复默认 Codex 配置，运行 `bash scripts/codex-deepseek-setup.sh` 后选 3（会删除 models.json 并恢复备份）。
 
-如果不想在 install 时看到这个菜单（比如自动化环境），用 `./setup.sh --skip-deepseek` 跳过，模型配置不受影响。
+#### OpenCode Go（`scripts/codex-opencode-go-setup.sh`）
+
+由本仓库 `scripts/opencode-go-build/` 生成的配置器，把 Codex 默认模型切换到 OpenCode Go 订阅服务。行为：
+
+- 交互菜单：选 1..N 切换模型（默认 `deepseek-v4-flash`，推荐；另有 pro / luna / kimi / glm / grok / hy3 / mimo 等），`c` 输入自定义模型 ID，`r` 还原默认配置。
+- API key：优先用环境变量 `OPENCODE_GO_API_KEY`（必须以 `sk-` 开头），否则交互输入；key 会写入 `~/.codex/config.toml` 的 `[model_providers.opencode-go] experimental_bearer_token`（明文，脚本会 chmod 600）。
+- 端点固定为 `https://opencode.ai/zen/go/v1`，`wire_api = "responses"`（Codex 目前只支持 Responses 协议；因此仅走 Anthropic `/v1/messages` 的 MiniMax M 系列与部分 Qwen 模型无法用于 Codex）。
+- 备份在 `~/.codex/backup-opencode-go/`，包含安装前的 `config.toml` 与 `models.json`；已安装过时再运行只改 `config.toml` 的 `model` 字段。
+- 会生成 `~/.codex/models.json` 模型目录（含上下文窗口、推理档位、系统提示词等元数据）；OpenCode Go 模型清单有变化时，编辑 `scripts/opencode-go-build/` 里的模板并重新运行构建器。
+- 已知情况：`deepseek-v4-flash` 的 Responses 支持最稳；`deepseek-v4-pro` 目前多轮/工具调用可能 400（opencode 官方 issue 跟踪中）；`gpt-5.6-luna` 原生支持 Responses 但流式输出可能整体缓冲。安装末尾可主动发一个最小测试请求验证所选模型。
+- 自定义来源：可用 `OPENCODE_GO_SETUP_SCRIPT=/path/to/script ./setup.sh` 指向其他位置；不想交互选择可用 `CODEX_MODEL_PROVIDER=opencode ./setup.sh` 直接配置。
+
+如果不想在 install 时看到菜单（比如自动化环境），用 `./setup.sh --skip-deepseek` 或 `CODEX_MODEL_PROVIDER=skip` 跳过，模型配置不受影响。
 
 ### 2. 语言服务器（`config/lsp-mcp-config.toml`）
 

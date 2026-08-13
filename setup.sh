@@ -3,9 +3,10 @@
 # codex-setup — one-click install / self-check / uninstall for the Codex
 # LSP bridge (clangd + basedpyright) and the associated developer instructions.
 #
-# Install first runs the DeepSeek model configurator
-# (scripts/codex-deepseek-setup.sh) so the default model can be switched to
-# DeepSeek in the same flow; pass --skip-deepseek to skip that interactive step.
+# Install first lets you choose which model configurator to run — DeepSeek
+# (scripts/codex-deepseek-setup.sh) or OpenCode Go
+# (scripts/codex-opencode-go-setup.sh) — so the default Codex model can be
+# switched in the same flow; pass --skip-deepseek to skip that step.
 #
 # The Codex CLI has no built-in LSP configuration, so this project wires
 # language servers into Codex through an MCP bridge (codex-lsp-bridge).
@@ -13,9 +14,13 @@
 # missing and leaves your existing ~/.codex/config.toml values untouched.
 #
 # Usage:
-#   ./setup.sh             install (idempotent) then run the self-check
+#   ./setup.sh             install (idempotent) then run the self-check; asks
+#                          whether to configure DeepSeek or OpenCode Go first
 #   ./setup.sh --skip-deepseek
-#                          install without touching the DeepSeek model config
+#                          install without the model-provider menu
+#   CODEX_MODEL_PROVIDER=opencode ./setup.sh
+#                          skip the prompt and configure OpenCode Go directly
+#                          (values: deepseek | opencode | skip)
 #   ./setup.sh --check     run the self-check only
 #   ./setup.sh --uninstall remove the LSP bridge MCP entry, venv and the
 #                           managed developer_instructions block
@@ -34,6 +39,7 @@ CODEX_DIR="${CODEX_DIR:-$HOME/.codex}"
 CODEX_CONFIG="${CODEX_CONFIG:-$CODEX_DIR/config.toml}"
 VENV_DIR="${VENV_DIR:-$CODEX_DIR/lsp-mcp-venv}"
 DEEPSEEK_SETUP_SCRIPT="${DEEPSEEK_SETUP_SCRIPT:-$PROJECT_DIR/scripts/codex-deepseek-setup.sh}"
+OPENCODE_GO_SETUP_SCRIPT="${OPENCODE_GO_SETUP_SCRIPT:-$PROJECT_DIR/scripts/codex-opencode-go-setup.sh}"
 
 BRIDGE_CONFIG="$PROJECT_DIR/config/lsp-mcp-config.toml"
 MCP_NAME="lsp_bridge"
@@ -46,7 +52,7 @@ warn() { printf '\033[1;33m[codex-setup]\033[0m WARN: %s\n' "$*" >&2; }
 err() { printf '\033[1;31m[codex-setup]\033[0m ERROR: %s\n' "$*" >&2; }
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 check_prereqs() {
@@ -145,6 +151,59 @@ run_deepseek_setup() {
   fi
 }
 
+run_opencode_go_setup() {
+  if [[ ! -f "$OPENCODE_GO_SETUP_SCRIPT" ]]; then
+    err "OpenCode Go setup script not found: $OPENCODE_GO_SETUP_SCRIPT"
+    err "set OPENCODE_GO_SETUP_SCRIPT to its location, or pass --skip-deepseek"
+    exit 1
+  fi
+  info "running OpenCode Go model setup ($OPENCODE_GO_SETUP_SCRIPT)"
+  info "pick 1..N to switch the default model, r to restore the default config"
+  if [[ "$CODEX_DIR_OVERRIDDEN" -eq 1 ]]; then
+    info "CODEX_DIR is set, aligning the OpenCode Go step via CODEX_HOME=$CODEX_DIR"
+    CODEX_HOME="$CODEX_DIR" bash "$OPENCODE_GO_SETUP_SCRIPT"
+  else
+    bash "$OPENCODE_GO_SETUP_SCRIPT"
+  fi
+}
+
+choose_model_provider() {
+  local choice="${CODEX_MODEL_PROVIDER:-}"
+  if [[ -z "$choice" ]]; then
+    while :; do
+      info "请选择要配置的模型提供方："
+      info "  1) DeepSeek 官方 API"
+      info "  2) OpenCode Go（订阅制，经 opencode.ai/zen/go）"
+      info "  s) 跳过模型配置（只装 LSP 桥）"
+      if ! read -r -p "[codex-setup] 输入 1 / 2 / s（回车默认 1）: " choice; then
+        choice=1
+        break
+      fi
+      [[ -z "$choice" ]] && choice=1
+      case "$choice" in
+        1|2|s|S) break ;;
+      esac
+      warn "无效输入，请输入 1、2 或 s。"
+    done
+  fi
+
+  case "${choice,,}" in
+    1|deepseek)
+      run_deepseek_setup
+      ;;
+    2|opencode|opencode-go)
+      run_opencode_go_setup
+      ;;
+    s|skip|none)
+      info "skipping model setup"
+      ;;
+    *)
+      err "invalid CODEX_MODEL_PROVIDER: $choice (expected deepseek | opencode | skip)"
+      exit 1
+      ;;
+  esac
+}
+
 self_check() {
   info "self-check: verifying the bridge starts and exposes LSP tools"
   [[ -x "$VENV_DIR/bin/codex-lsp-bridge" ]] || { err "bridge binary missing at $VENV_DIR/bin/codex-lsp-bridge"; exit 1; }
@@ -238,14 +297,14 @@ uninstall() {
   info "done. The project itself (~/codex-setup) was kept; delete it manually if no longer needed."
 }
 
-SKIP_DEEPSEEK=0
+SKIP_MODEL_SETUP=0
 
 install() {
   check_prereqs
-  if [[ "$SKIP_DEEPSEEK" -eq 0 ]]; then
-    run_deepseek_setup
+  if [[ "$SKIP_MODEL_SETUP" -eq 0 ]]; then
+    choose_model_provider
   else
-    info "skipping DeepSeek model setup (--skip-deepseek)"
+    info "skipping model setup (--skip-deepseek)"
   fi
   install_venv
   install_mcp_entry
@@ -264,8 +323,8 @@ case "${1:-install}" in
   --uninstall)
     uninstall
     ;;
-  --skip-deepseek)
-    SKIP_DEEPSEEK=1
+  --skip-deepseek|--skip-model)
+    SKIP_MODEL_SETUP=1
     install
     ;;
   install|"")
